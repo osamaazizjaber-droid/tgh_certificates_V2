@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { nhost } from '../nhostClient';
 import QRCode from 'qrcode';
 import { jsPDF } from 'jspdf';
@@ -188,6 +188,14 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   const [headerMapping, setHeaderMapping] = useState({ name: -1, facilitator: -1, projectCode: -1, batch: -1, language: -1, certId: -1 });
   
   const [processingRows, setProcessingRows] = useState({});
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [progressIndex, setProgressIndex] = useState(0);
+  const [progressTotal, setProgressTotal] = useState(0);
+
+  const cancelGenerationRef = useRef(false);
+  const pauseGenerationRef = useRef(false);
 
   useEffect(() => {
     if (nhost) {
@@ -704,8 +712,54 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
     const selectedRows = recipients.filter(r => selectedIds.includes(r.id));
     console.log("generateCertificates: filtered selectedRows =", selectedRows);
+
+    setIsGenerating(true);
+    setIsPaused(false);
+    setProgressIndex(0);
+    setProgressTotal(selectedRows.length);
+    cancelGenerationRef.current = false;
+    pauseGenerationRef.current = false;
+
+    // Pre-load background template images once before entering the loop
+    let bgImgEn = null;
+    let bgImgAr = null;
+    const hasEn = selectedRows.some(r => r.language.toUpperCase() === 'EN');
+    const hasAr = selectedRows.some(r => r.language.toUpperCase() === 'AR');
+
+    try {
+      if (hasEn && settings.bg_image_en) {
+        const corsBgUrl = settings.bg_image_en + (settings.bg_image_en.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
+        bgImgEn = await loadImage(corsBgUrl);
+      }
+      if (hasAr && settings.bg_image_ar) {
+        const corsBgUrl = settings.bg_image_ar + (settings.bg_image_ar.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
+        bgImgAr = await loadImage(corsBgUrl);
+      }
+    } catch (preloadErr) {
+      console.error("Failed to pre-load background template images:", preloadErr);
+      alert("Failed to pre-load template background images. Check your internet connection.");
+      setIsGenerating(false);
+      return;
+    }
     
-    for (const row of selectedRows) {
+    for (let i = 0; i < selectedRows.length; i++) {
+      const row = selectedRows[i];
+
+      // Check cancellation and pause states
+      if (cancelGenerationRef.current) {
+        console.log("generateCertificates: generation cancelled by user.");
+        break;
+      }
+      while (pauseGenerationRef.current) {
+        if (cancelGenerationRef.current) break;
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      if (cancelGenerationRef.current) {
+        console.log("generateCertificates: generation cancelled by user.");
+        break;
+      }
+
+      setProgressIndex(i + 1);
       console.log(`generateCertificates: starting generation for ${row.name} (id: ${row.id}, cert_id: ${row.cert_id})`);
       setProcessingRows(prev => ({ ...prev, [row.id]: 'generating' }));
       
@@ -719,10 +773,10 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
       try {
         const layout = settings.layouts[row.language.toLowerCase()];
-        const bgImage = row.language.toLowerCase() === 'en' ? settings.bg_image_en : settings.bg_image_ar;
+        const bgImg = row.language.toLowerCase() === 'en' ? bgImgEn : bgImgAr;
 
-        if (!bgImage) {
-          throw new Error('Template background image is missing for ' + row.language);
+        if (!bgImg) {
+          throw new Error('Template background image is missing/failed to load for ' + row.language);
         }
 
         const scale = 3.0;
@@ -731,14 +785,9 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         canvas.height = 565 * scale;
         const ctx = canvas.getContext('2d');
 
-        console.log(`generateCertificates: loading template background image for ${row.name}`);
-        // Append cache-busting query parameter to bypass browser CORS cache wildcard bug
-        const corsBgUrl = bgImage + (bgImage.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
-        const bgImg = await loadImage(corsBgUrl);
         ctx.drawImage(bgImg, 0, 0, 800 * scale, 565 * scale);
 
         // Recipient Name (Centered)
-        console.log(`generateCertificates: drawing recipient name: ${row.name}`);
         ctx.fillStyle = layout.name.color || '#1a1d24';
         const fontSizeScaled = parseFloat(layout.name.fontSize || 32) * scale;
         ctx.font = `${layout.name.fontWeight || 'bold'} ${fontSizeScaled}px ${layout.name.fontFamily || 'Outfit'}`;
@@ -748,7 +797,6 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
         // Verification URL QR Code
         const verifyUrl = `${window.location.protocol}//${window.location.host}/verify?id=${encodeURIComponent(row.cert_id)}`;
-        console.log(`generateCertificates: creating QR Code for URL: ${verifyUrl}`);
         const qrSizeScaled = parseFloat(layout.qrCode.size || 100) * scale;
         const qrDataUrl = await QRCode.toDataURL(verifyUrl, { margin: 1, width: qrSizeScaled });
         const qrImg = await loadImage(qrDataUrl);
@@ -767,7 +815,6 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         ctx.fillText(labelText, labelX, labelY);
 
         // Convert to PDF
-        console.log(`generateCertificates: converting canvas to PDF blob for ${row.name}`);
         const pdf = new jsPDF({
           orientation: 'landscape',
           unit: 'px',
@@ -778,7 +825,6 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
         // Prepare file upload to Nhost Storage
         const fileObj = new File([pdfBlob], `${row.cert_id}.pdf`, { type: 'application/pdf' });
-        console.log(`generateCertificates: uploading PDF to Nhost Storage for ${row.name}`);
         const uploadRes = await nhost.storage.upload({
           file: fileObj,
           bucketId: 'default'
@@ -788,7 +834,6 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         
         const fileId = uploadRes.fileMetadata.id;
         const publicUrl = nhost.storage.getPublicUrl({ fileId });
-        console.log(`generateCertificates: PDF uploaded successfully, url: ${publicUrl}`);
 
         // Update database row status and link
         const { error: dbUpdateError } = await nhost.graphql.request(UPDATE_STATUS_MUTATION, {
@@ -818,7 +863,25 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       }
     }
     
+    setIsGenerating(false);
+    setIsPaused(false);
     setSelectedIds([]);
+  };
+
+  const handlePauseToggle = () => {
+    setIsPaused(prev => {
+      const next = !prev;
+      pauseGenerationRef.current = next;
+      return next;
+    });
+  };
+
+  const handleCancelGeneration = () => {
+    if (confirm("Are you sure you want to stop the certificate generation? Any certificates already generated will remain saved.")) {
+      cancelGenerationRef.current = true;
+      setIsGenerating(false);
+      setIsPaused(false);
+    }
   };
 
   const loadImage = (src) => {
@@ -933,6 +996,43 @@ export default function Dashboard({ showOnlyCompleted = false }) {
           )}
         </div>
       </div>
+
+      {isGenerating && (
+        <div className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem', borderLeft: '4px solid var(--accent-indigo)', marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <RefreshCw size={20} className={isPaused ? "" : "badge-generating"} style={{ color: 'var(--accent-indigo)', animation: isPaused ? 'none' : 'spin 2s linear infinite' }} />
+              <span style={{ fontWeight: 600 }}>
+                {isPaused ? 'Generation Paused' : 'Generating Certificates...'} ({progressIndex} of {progressTotal})
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
+              <button 
+                className="btn btn-secondary" 
+                onClick={handlePauseToggle}
+                style={{ padding: '0.4rem 1rem', fontSize: '0.8rem', borderColor: 'var(--accent-amber)', color: 'var(--accent-amber)', background: 'rgba(245, 158, 11, 0.05)' }}
+              >
+                {isPaused ? 'Resume' : 'Pause'}
+              </button>
+              <button 
+                className="btn btn-danger" 
+                onClick={handleCancelGeneration}
+                style={{ padding: '0.4rem 1rem', fontSize: '0.8rem' }}
+              >
+                Stop / Cancel
+              </button>
+            </div>
+          </div>
+          <div style={{ width: '100%', height: '8px', background: 'var(--bg-tertiary)', borderRadius: '4px', overflow: 'hidden' }}>
+            <div style={{ 
+              width: `${(progressIndex / progressTotal) * 100}%`, 
+              height: '100%', 
+              background: 'var(--accent-indigo)', 
+              transition: 'width 0.3s ease' 
+            }} />
+          </div>
+        </div>
+      )}
 
       {!nhost && (
         <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '4px solid var(--accent-rose)', display: 'flex', gap: '1rem', alignItems: 'center' }}>
