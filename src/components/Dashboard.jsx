@@ -630,7 +630,9 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         const ctx = canvas.getContext('2d');
 
         console.log(`generateCertificates: loading template background image for ${row.name}`);
-        const bgImg = await loadImage(bgImage);
+        // Append cache-busting query parameter to bypass browser CORS cache wildcard bug
+        const corsBgUrl = bgImage + (bgImage.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
+        const bgImg = await loadImage(corsBgUrl);
         ctx.drawImage(bgImg, 0, 0, 800 * scale, 565 * scale);
 
         // Recipient Name (Centered)
