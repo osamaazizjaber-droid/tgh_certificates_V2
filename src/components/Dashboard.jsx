@@ -6,7 +6,7 @@ import JSZip from 'jszip';
 import { 
   Users, CheckCircle, Clock, AlertCircle, Play, Plus, Trash2, 
   Upload, Download, Search, Filter, Database, RefreshCw, Settings, ShieldAlert,
-  ExternalLink
+  ExternalLink, RotateCcw
 } from 'lucide-react';
 
 const FETCH_DATA_QUERY = `
@@ -117,6 +117,21 @@ const UPDATE_STATUS_MUTATION = `
       id
       status
       pdf_url
+    }
+  }
+`;
+
+const RESET_STATUSES_MUTATION = `
+  mutation ResetStatuses($ids: [uuid!]!) {
+    update_certificates(
+      where: {id: {_in: $ids}},
+      _set: {status: "pending", pdf_url: null}
+    ) {
+      returning {
+        id
+        status
+        pdf_url
+      }
     }
   }
 `;
@@ -460,6 +475,93 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     } catch (e) {
       console.error(e);
       alert('Delete failed: ' + e.message);
+    }
+  };
+
+  const deletePdfFromStorage = async (pdfUrl) => {
+    if (!pdfUrl) return;
+    try {
+      const parts = pdfUrl.split('/v1/files/');
+      const fileId = parts.length > 1 ? parts[1] : null;
+      if (fileId) {
+        await nhost.storage.delete({ fileId });
+      }
+    } catch (err) {
+      console.error(`Failed to delete PDF from storage for URL ${pdfUrl}:`, err);
+    }
+  };
+
+  const handleResetStatus = async (row) => {
+    if (!confirm(`Are you sure you want to undo generation for ${row.name}? This will delete the generated PDF and reset the status to pending.`)) return;
+    
+    try {
+      setProcessingRows(prev => ({ ...prev, [row.id]: 'generating' }));
+      
+      const { error } = await nhost.graphql.request(UPDATE_STATUS_MUTATION, {
+        id: row.id,
+        status: 'pending',
+        pdf_url: null
+      });
+
+      if (error) {
+        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
+        throw new Error(errMsg);
+      }
+
+      if (row.pdf_url) {
+        await deletePdfFromStorage(row.pdf_url);
+      }
+
+      setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'pending', pdf_url: null } : r));
+    } catch (e) {
+      console.error(e);
+      alert('Failed to reset status: ' + e.message);
+    } finally {
+      setProcessingRows(prev => {
+        const copy = { ...prev };
+        delete copy[row.id];
+        return copy;
+      });
+    }
+  };
+
+  const handleResetSelected = async () => {
+    const targetRows = recipients.filter(r => selectedIds.includes(r.id) && r.status !== 'pending');
+    if (targetRows.length === 0) return;
+    
+    if (!confirm(`Are you sure you want to undo generation for the ${targetRows.length} selected recipient(s)? This will delete their generated PDFs and reset their statuses back to pending.`)) return;
+
+    try {
+      setImporting(true);
+      
+      const idsToReset = targetRows.map(r => r.id);
+      
+      const { error } = await nhost.graphql.request(RESET_STATUSES_MUTATION, {
+        ids: idsToReset
+      });
+
+      if (error) {
+        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
+        throw new Error(errMsg);
+      }
+
+      for (const row of targetRows) {
+        if (row.pdf_url) {
+          await deletePdfFromStorage(row.pdf_url);
+        }
+      }
+
+      setRecipients(prev => 
+        prev.map(r => idsToReset.includes(r.id) ? { ...r, status: 'pending', pdf_url: null } : r)
+      );
+      
+      setSelectedIds([]);
+      alert(`Successfully reset ${targetRows.length} recipient(s) to pending!`);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to reset selected recipients: ' + e.message);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -1033,6 +1135,17 @@ export default function Dashboard({ showOnlyCompleted = false }) {
                 Delete Selected
               </button>
 
+              {recipients.some(r => selectedIds.includes(r.id) && r.status !== 'pending') && (
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={handleResetSelected} 
+                  style={{ padding: '0.4rem 1rem', fontSize: '0.8rem', borderColor: 'var(--accent-amber)', color: 'var(--accent-amber)' }}
+                >
+                  <RotateCcw size={14} />
+                  Undo Generation
+                </button>
+              )}
+
               {recipients.some(r => selectedIds.includes(r.id) && r.pdf_url) && (
                 <>
                   <button className="btn btn-secondary" onClick={downloadIndividually} style={{ padding: '0.4rem 1rem', fontSize: '0.8rem', borderColor: 'var(--accent-emerald)', color: 'var(--accent-emerald)' }}>
@@ -1119,18 +1232,30 @@ export default function Dashboard({ showOnlyCompleted = false }) {
                         </span>
                       </td>
                       <td>
-                        {r.pdf_url ? (
-                          <div style={{ display: 'flex', gap: '0.5rem' }}>
-                            <a href={r.pdf_url} target="_blank" rel="noreferrer" title="Open PDF">
-                              <ExternalLink size={16} style={{ color: 'var(--accent-gold)' }} />
-                            </a>
-                            <a href={`/verify?id=${r.cert_id}`} target="_blank" rel="noreferrer" title="Verify Route">
-                              <CheckCircle size={16} style={{ color: 'var(--accent-indigo)' }} />
-                            </a>
-                          </div>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)' }}>—</span>
-                        )}
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          {r.pdf_url && (
+                            <>
+                              <a href={r.pdf_url} target="_blank" rel="noreferrer" title="Open PDF">
+                                <ExternalLink size={16} style={{ color: 'var(--accent-gold)' }} />
+                              </a>
+                              <a href={`/verify?id=${r.cert_id}`} target="_blank" rel="noreferrer" title="Verify Route">
+                                <CheckCircle size={16} style={{ color: 'var(--accent-indigo)' }} />
+                              </a>
+                            </>
+                          )}
+                          {r.status !== 'pending' && (
+                            <button 
+                              onClick={() => handleResetStatus(r)}
+                              style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--accent-amber)', display: 'inline-flex', alignItems: 'center' }}
+                              title="Undo Generation (Reset to Pending)"
+                            >
+                              <RotateCcw size={16} />
+                            </button>
+                          )}
+                          {!r.pdf_url && r.status === 'pending' && (
+                            <span style={{ color: 'var(--text-muted)' }}>—</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

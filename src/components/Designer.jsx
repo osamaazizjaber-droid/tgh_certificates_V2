@@ -8,13 +8,6 @@ const GET_SETTINGS_QUERY = `
       id
       cert_prefix
       layouts
-    }
-  }
-`;
-
-const GET_BG_IMAGES_QUERY = `
-  query GetBgImages {
-    settings_by_pk(id: "default") {
       bg_image_en
       bg_image_ar
     }
@@ -64,6 +57,8 @@ export default function Designer() {
   const [statusMsg, setStatusMsg] = useState('');
   
   const canvasRef = useRef(null);
+  const canvasAreaRef = useRef(null);
+  const [designerScale, setDesignerScale] = useState(1);
   const dragStartPos = useRef({ x: 0, y: 0 });
   const nodeStartPos = useRef({ x: 0, y: 0 });
 
@@ -81,6 +76,32 @@ export default function Designer() {
   useEffect(() => {
     fetchSettings();
   }, []);
+
+  useEffect(() => {
+    if (!canvasAreaRef.current) return;
+    
+    const updateScale = () => {
+      const rect = canvasAreaRef.current.getBoundingClientRect();
+      const availWidth = rect.width - 48; // 24px padding on each side
+      const availHeight = rect.height - 48;
+      
+      const scaleW = availWidth / 800;
+      const scaleH = availHeight / 565;
+      const newScale = Math.min(scaleW, scaleH, 1); // Don't scale up past 100%
+      setDesignerScale(newScale);
+    };
+
+    updateScale();
+    
+    const observer = new ResizeObserver(updateScale);
+    observer.observe(canvasAreaRef.current);
+    
+    window.addEventListener('resize', updateScale);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateScale);
+    };
+  }, [loading]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -127,28 +148,6 @@ export default function Designer() {
     };
   }, [selectedNode, config, lang]);
 
-  const fetchBgImages = async () => {
-    try {
-      const { data, error } = await nhost.graphql.request(GET_BG_IMAGES_QUERY);
-      if (error) throw error;
-      const settingsData = data?.settings_by_pk;
-      if (settingsData) {
-        setConfig(prev => {
-          if (!prev) return null;
-          const updated = {
-            ...prev,
-            bg_image_en: settingsData.bg_image_en || '',
-            bg_image_ar: settingsData.bg_image_ar || ''
-          };
-          localStorage.setItem('tgh_settings', JSON.stringify(updated));
-          return updated;
-        });
-      }
-    } catch (e) {
-      console.error("Failed to load background images asynchronously", e);
-    }
-  };
-
   const fetchSettings = async () => {
     try {
       const hasCache = localStorage.getItem('tgh_settings');
@@ -177,8 +176,8 @@ export default function Designer() {
         };
         finalConfig = {
           ...settingsData,
-          bg_image_en: '',
-          bg_image_ar: '',
+          bg_image_en: settingsData.bg_image_en || '',
+          bg_image_ar: settingsData.bg_image_ar || '',
           layouts: mergedLayouts
         };
       } else {
@@ -193,9 +192,6 @@ export default function Designer() {
 
       setConfig(finalConfig);
       localStorage.setItem('tgh_settings', JSON.stringify(finalConfig));
-
-      // Asynchronously fetch the heavy background template images in the background
-      fetchBgImages();
     } catch (e) {
       console.error(e);
       const hasCache = localStorage.getItem('tgh_settings');
@@ -390,7 +386,7 @@ export default function Designer() {
       </div>
 
       <div className="designer-grid">
-        <div className="canvas-area">
+        <div className="canvas-area" ref={canvasAreaRef}>
           <div style={{ position: 'absolute', top: '1rem', left: '1rem', display: 'flex', gap: '0.5rem', zIndex: 10 }}>
             <button 
               className={`btn btn-secondary ${lang === 'en' ? 'active' : ''}`} 
@@ -410,19 +406,31 @@ export default function Designer() {
             </button>
           </div>
 
-          <div 
-            ref={canvasRef}
-            className="certificate-canvas-container"
-            style={{ 
-              width: '800px', 
-              height: '565px',
-              backgroundImage: bgImage ? `url(${bgImage})` : 'none',
-              backgroundSize: '100% 100%',
-              backgroundColor: '#fff',
-              position: 'relative',
-              boxShadow: '0 10px 30px rgba(0,0,0,0.5)'
-            }}
-          >
+          <div style={{
+            width: `${800 * designerScale}px`,
+            height: `${565 * designerScale}px`,
+            position: 'relative',
+            boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+            backgroundColor: '#fff'
+          }}>
+            <div 
+              ref={canvasRef}
+              className="certificate-canvas-container"
+              style={{ 
+                width: '800px', 
+                height: '565px',
+                backgroundImage: bgImage ? `url(${bgImage})` : 'none',
+                backgroundSize: '100% 100%',
+                backgroundColor: '#fff',
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                transform: `scale(${designerScale})`,
+                transformOrigin: 'top left',
+                maxWidth: 'none',
+                boxShadow: 'none'
+              }}
+            >
             {!bgImage && (
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#a0aec0', gap: '1rem' }}>
                 <ImageIcon size={48} strokeWidth={1} />
@@ -485,6 +493,7 @@ export default function Designer() {
               </div>
             </div>
 
+          </div>
           </div>
         </div>
 
