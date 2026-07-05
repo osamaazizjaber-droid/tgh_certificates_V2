@@ -228,14 +228,28 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   const cancelGenerationRef = useRef(false);
   const pauseGenerationRef = useRef(false);
 
-  const generateNextCertId = (projectCode, countOffset = 0) => {
+  const generateNextCertId = (projectCode, countOffset = 0, excludeIds = []) => {
     const pCode = (projectCode || '').trim();
-    const count = recipients.length + 1 + countOffset;
-    if (pCode) {
-      return `TGH-${pCode}-${String(count).padStart(3, '0')}`;
-    }
+    let baseCount = recipients.length + 1 + countOffset;
     const activePrefix = (settings?.cert_prefix) || 'TGH-KU50-';
-    return `${activePrefix}${String(count).padStart(3, '0')}`;
+    
+    while (true) {
+      let candidateId;
+      if (pCode) {
+        candidateId = `TGH-${pCode}-${String(baseCount).padStart(3, '0')}`;
+      } else {
+        candidateId = `${activePrefix}${String(baseCount).padStart(3, '0')}`;
+      }
+      
+      const existsInRecipients = recipients.some(r => r.cert_id === candidateId);
+      const existsInExclude = excludeIds.includes(candidateId);
+      
+      if (!existsInRecipients && !existsInExclude) {
+        return candidateId;
+      }
+      
+      baseCount++;
+    }
   };
 
   useEffect(() => {
@@ -318,10 +332,8 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
     setHeaderMapping(mapping);
 
-    const activePrefix = settings?.cert_prefix || 'TGH-KU50-';
-    let nextIndex = recipients.length + 1;
-
     const previews = [];
+    const generatedBatchIds = [];
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
       const values = parseCSVLine(line);
@@ -335,9 +347,13 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       let rawLang = langIdx !== -1 ? (values[langIdx] || 'EN') : 'EN';
       const language = rawLang.toUpperCase() === 'AR' ? 'AR' : 'EN';
       
-      const certId = certIdIdx !== -1 && values[certIdIdx] 
-        ? values[certIdIdx] 
-        : generateNextCertId(projectCode, i - 1);
+      let certId = '';
+      if (certIdIdx !== -1 && values[certIdIdx]) {
+        certId = values[certIdIdx].trim();
+      } else {
+        certId = generateNextCertId(projectCode, 0, generatedBatchIds);
+        generatedBatchIds.push(certId);
+      }
 
       previews.push({
         name,
