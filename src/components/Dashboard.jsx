@@ -485,7 +485,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       {
         Name: "Osama Al-Sagheer",
         Facilitator: "Dr. Ahmad",
-        Project_Code: "PRJ-2026-TGH",
+        Project_Code: "KU50",
         Batch: "Batch 1",
         Language: "EN",
         Cert_ID: ""
@@ -493,7 +493,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       {
         Name: "سليم علي",
         Facilitator: "أحمد صالح",
-        Project_Code: "PRJ-2026-TGH",
+        Project_Code: "KU50",
         Batch: "Batch 1",
         Language: "AR",
         Cert_ID: ""
@@ -1075,6 +1075,30 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   const savedCount = recipients.filter(r => r.status === 'saved').length;
   const failedCount = recipients.filter(r => r.status === 'failed').length;
 
+  const handleExportFiltered = () => {
+    if (filteredRecipients.length === 0) {
+      alert("No recipients to export.");
+      return;
+    }
+
+    const data = filteredRecipients.map((r, index) => ({
+      "No.": index + 1,
+      "Certificate ID": r.cert_id,
+      "Name": r.name,
+      "Facilitator": r.facilitator || "",
+      "Project Code": r.project_code || "",
+      "Batch": r.batch || "",
+      "Language": r.language === 'AR' ? 'Arabic' : 'English',
+      "Status": r.status === 'saved' ? 'Generated' : r.status.toUpperCase(),
+      "PDF URL": r.pdf_url || ""
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Recipients Export");
+    XLSX.writeFile(workbook, "tgh_recipients_export.xlsx");
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       
@@ -1092,20 +1116,38 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         
         <div style={{ display: 'flex', gap: '0.75rem' }}>
           {showOnlyCompleted ? (
-            <button 
-              className="btn btn-secondary" 
-              onClick={() => {
-                const completedRows = recipients.filter(r => r.status === 'saved');
-                downloadAsZip(completedRows);
-              }}
-              disabled={recipients.filter(r => r.status === 'saved').length === 0 || importing}
-              style={{ borderColor: 'var(--accent-gold)', color: 'var(--accent-gold)' }}
-            >
-              <Download size={16} />
-              Download All ZIP
-            </button>
+            <>
+              <button 
+                className="btn btn-secondary" 
+                onClick={handleExportFiltered} 
+                disabled={filteredRecipients.length === 0}
+              >
+                <Download size={16} />
+                Export Excel
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => {
+                  const completedRows = recipients.filter(r => r.status === 'saved');
+                  downloadAsZip(completedRows);
+                }}
+                disabled={recipients.filter(r => r.status === 'saved').length === 0 || importing}
+                style={{ borderColor: 'var(--accent-gold)', color: 'var(--accent-gold)' }}
+              >
+                <Download size={16} />
+                Download All ZIP
+              </button>
+            </>
           ) : (
             <>
+              <button 
+                className="btn btn-secondary" 
+                onClick={handleExportFiltered} 
+                disabled={filteredRecipients.length === 0}
+              >
+                <Download size={16} />
+                Export Excel
+              </button>
               {recipients.length > 0 && (
                 <button className="btn btn-danger" onClick={handleDeleteAll}>
                   <Trash2 size={16} />
