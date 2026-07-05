@@ -7,7 +7,7 @@ import * as XLSX from 'xlsx';
 import { 
   Users, CheckCircle, Clock, AlertCircle, Play, Plus, Trash2, 
   Upload, Download, Search, Filter, Database, RefreshCw, Settings, ShieldAlert,
-  ExternalLink, RotateCcw
+  ExternalLink, RotateCcw, Edit2
 } from 'lucide-react';
 
 const FETCH_DATA_QUERY = `
@@ -137,6 +137,35 @@ const RESET_STATUSES_MUTATION = `
   }
 `;
 
+const UPDATE_RECIPIENT_MUTATION = `
+  mutation UpdateRecipient($id: uuid!, $name: String!, $facilitator: String!, $project_code: String!, $batch: String!, $language: String!, $cert_id: String!, $status: String!, $pdf_url: String) {
+    update_certificates_by_pk(
+      pk_columns: {id: $id},
+      _set: {
+        name: $name,
+        facilitator: $facilitator,
+        project_code: $project_code,
+        batch: $batch,
+        language: $language,
+        cert_id: $cert_id,
+        status: $status,
+        pdf_url: $pdf_url
+      }
+    ) {
+      id
+      cert_id
+      name
+      facilitator
+      project_code
+      batch
+      status
+      pdf_url
+      language
+      created_at
+    }
+  }
+`;
+
 export default function Dashboard({ showOnlyCompleted = false }) {
   const [recipients, setRecipients] = useState(() => {
     try {
@@ -189,6 +218,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   const [headerMapping, setHeaderMapping] = useState({ name: -1, facilitator: -1, projectCode: -1, batch: -1, language: -1, certId: -1 });
   
   const [processingRows, setProcessingRows] = useState({});
+  const [editingRecipient, setEditingRecipient] = useState(null);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -197,6 +227,16 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
   const cancelGenerationRef = useRef(false);
   const pauseGenerationRef = useRef(false);
+
+  const generateNextCertId = (projectCode, countOffset = 0) => {
+    const pCode = (projectCode || '').trim();
+    const count = recipients.length + 1 + countOffset;
+    if (pCode) {
+      return `TGH-${pCode}-${String(count).padStart(3, '0')}`;
+    }
+    const activePrefix = (settings?.cert_prefix) || 'TGH-KU50-';
+    return `${activePrefix}${String(count).padStart(3, '0')}`;
+  };
 
   useEffect(() => {
     if (nhost) {
@@ -297,7 +337,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       
       const certId = certIdIdx !== -1 && values[certIdIdx] 
         ? values[certIdIdx] 
-        : `${activePrefix}${String(nextIndex++).padStart(3, '0')}`;
+        : generateNextCertId(projectCode, i - 1);
 
       previews.push({
         name,
@@ -346,12 +386,6 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     }
   };
 
-  const generateNextCertId = (prefix) => {
-    const activePrefix = prefix || (settings?.cert_prefix) || 'TGH-KU50-';
-    const count = recipients.length + 1;
-    return `${activePrefix}${String(count).padStart(3, '0')}`;
-  };
-
   const handleAddRecipient = async (e) => {
     e.preventDefault();
     try {
@@ -383,17 +417,93 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     }
   };
 
+  const handleUpdateRecipient = async (e) => {
+    e.preventDefault();
+    try {
+      const original = recipients.find(r => r.id === editingRecipient.id);
+      let resetRequired = false;
+      
+      if (original) {
+        const criticalFieldsChanged = 
+          original.name !== editingRecipient.name.trim() ||
+          original.facilitator !== editingRecipient.facilitator.trim() ||
+          original.project_code !== editingRecipient.project_code.trim() ||
+          original.batch !== editingRecipient.batch.trim() ||
+          original.language !== editingRecipient.language ||
+          original.cert_id !== editingRecipient.cert_id.trim();
+          
+        if (criticalFieldsChanged && original.status !== 'pending') {
+          resetRequired = true;
+        }
+      }
+
+      let resetStatus = editingRecipient.status;
+      let resetPdfUrl = editingRecipient.pdf_url;
+      
+      if (resetRequired) {
+        if (confirm("You modified certificate details on an already generated certificate. Saving will delete the old PDF and reset the status to 'Pending' so a new one can be generated. Do you want to proceed?")) {
+          resetStatus = 'pending';
+          resetPdfUrl = null;
+          if (editingRecipient.pdf_url) {
+            await deletePdfFromStorage(editingRecipient.pdf_url);
+          }
+        } else {
+          return;
+        }
+      }
+
+      const { data, error } = await nhost.graphql.request(UPDATE_RECIPIENT_MUTATION, {
+        id: editingRecipient.id,
+        name: editingRecipient.name.trim(),
+        facilitator: editingRecipient.facilitator.trim(),
+        project_code: editingRecipient.project_code.trim(),
+        batch: editingRecipient.batch.trim(),
+        language: editingRecipient.language,
+        cert_id: editingRecipient.cert_id.trim(),
+        status: resetStatus,
+        pdf_url: resetPdfUrl
+      });
+
+      if (error) {
+        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
+        throw new Error(errMsg);
+      }
+
+      const finalUpdated = data?.update_certificates_by_pk;
+      if (finalUpdated) {
+        setRecipients(prev => prev.map(r => r.id === finalUpdated.id ? finalUpdated : r));
+      }
+      setEditingRecipient(null);
+    } catch (e) {
+      console.error(e);
+      alert('Error updating recipient: ' + e.message);
+    }
+  };
+
   const handleDownloadTemplate = () => {
-    const csvContent = "Name,Facilitator,Project_Code,Batch,Language,Cert_ID\nOsama Al-Sagheer,Dr. Ahmad,PRJ-2026-TGH,Batch 1,EN,\nسليم علي,أحمد صالح,PRJ-2026-TGH,Batch 1,AR,\n";
-    // Adding UTF-8 BOM (\ufeff) to make Arabic open correctly in Excel
-    const blob = new Blob(["\ufeff" + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", "tgh_recipients_template.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const data = [
+      {
+        Name: "Osama Al-Sagheer",
+        Facilitator: "Dr. Ahmad",
+        Project_Code: "PRJ-2026-TGH",
+        Batch: "Batch 1",
+        Language: "EN",
+        Cert_ID: ""
+      },
+      {
+        Name: "سليم علي",
+        Facilitator: "أحمد صالح",
+        Project_Code: "PRJ-2026-TGH",
+        Batch: "Batch 1",
+        Language: "AR",
+        Cert_ID: ""
+      }
+    ];
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Recipients Template");
+    XLSX.writeFile(workbook, "tgh_recipients_template.xlsx");
   };
 
   const handleCSVFileSelect = (e) => {
@@ -1317,7 +1427,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
                   <th>Batch</th>
                   <th>Language</th>
                   <th>Status</th>
-                  <th>Link</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1352,7 +1462,15 @@ export default function Dashboard({ showOnlyCompleted = false }) {
                         </span>
                       </td>
                       <td>
-                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', gap: '0.65rem', alignItems: 'center' }}>
+                          <button 
+                            type="button"
+                            onClick={() => setEditingRecipient({ ...r })}
+                            style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center' }}
+                            title="Edit Participant Details"
+                          >
+                            <Edit2 size={16} />
+                          </button>
                           {r.pdf_url && (
                             <>
                               <a href={r.pdf_url} target="_blank" rel="noreferrer" title="Open PDF">
@@ -1371,9 +1489,6 @@ export default function Dashboard({ showOnlyCompleted = false }) {
                             >
                               <RotateCcw size={16} />
                             </button>
-                          )}
-                          {!r.pdf_url && r.status === 'pending' && (
-                            <span style={{ color: 'var(--text-muted)' }}>—</span>
                           )}
                         </div>
                       </td>
@@ -1477,6 +1592,107 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         </div>
       )}
 
+      {/* Edit Recipient Modal */}
+      {editingRecipient && (
+        <div className="modal-overlay" onClick={() => setEditingRecipient(null)}>
+          <div className="modal-content glass-panel" onClick={(e) => e.stopPropagation()} style={{ padding: '2rem', maxWidth: '550px' }}>
+            <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem' }}>Edit Participant Information</h3>
+            
+            <form onSubmit={handleUpdateRecipient}>
+              <div className="form-group">
+                <label className="form-label">Recipient Full Name *</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  value={editingRecipient.name}
+                  onChange={(e) => setEditingRecipient(prev => ({ ...prev, name: e.target.value }))}
+                  required
+                  placeholder="e.g. Osama Al-Sagheer"
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Facilitator / Instructor</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  value={editingRecipient.facilitator || ''}
+                  onChange={(e) => setEditingRecipient(prev => ({ ...prev, facilitator: e.target.value }))}
+                  placeholder="e.g. Dr. Ahmad Salih"
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label className="form-label">Project Code</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    value={editingRecipient.project_code || ''}
+                    onChange={(e) => setEditingRecipient(prev => ({ ...prev, project_code: e.target.value }))}
+                    placeholder="e.g. PRJ-2026-TGH"
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label className="form-label">Batch</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    value={editingRecipient.batch || ''}
+                    onChange={(e) => setEditingRecipient(prev => ({ ...prev, batch: e.target.value }))}
+                    placeholder="e.g. Batch 1"
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label className="form-label">Language</label>
+                  <select 
+                    className="form-input"
+                    value={editingRecipient.language}
+                    onChange={(e) => setEditingRecipient(prev => ({ ...prev, language: e.target.value }))}
+                  >
+                    <option value="EN">English</option>
+                    <option value="AR">Arabic</option>
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>Certificate ID *</span>
+                    <button 
+                      type="button" 
+                      onClick={() => setEditingRecipient(prev => ({ ...prev, cert_id: generateNextCertId(prev.project_code) }))}
+                      style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--accent-gold)', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                      title="Regenerate Certificate ID"
+                    >
+                      <RotateCcw size={12} /> Regenerate
+                    </button>
+                  </label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    value={editingRecipient.cert_id}
+                    onChange={(e) => setEditingRecipient(prev => ({ ...prev, cert_id: e.target.value }))}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setEditingRecipient(null)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* CSV/Excel Import Modal */}
       {showCSVModal && (
         <div className="modal-overlay" onClick={() => { setShowCSVModal(false); setCsvText(''); }}>
@@ -1490,7 +1706,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
                 style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem' }}
               >
                 <Download size={12} />
-                Download CSV Template
+                Download Excel Template
               </button>
             </div>
             
