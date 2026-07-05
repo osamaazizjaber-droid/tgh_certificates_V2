@@ -3,6 +3,7 @@ import { nhost } from '../nhostClient';
 import QRCode from 'qrcode';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
+import * as XLSX from 'xlsx';
 import { 
   Users, CheckCircle, Clock, AlertCircle, Play, Plus, Trash2, 
   Upload, Download, Search, Filter, Database, RefreshCw, Settings, ShieldAlert,
@@ -398,11 +399,30 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   const handleCSVFileSelect = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setCsvText(event.target.result);
-    };
-    reader.readAsText(file);
+    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const data = new Uint8Array(event.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const csv = XLSX.utils.sheet_to_csv(worksheet);
+          setCsvText(csv);
+        } catch (err) {
+          console.error("Excel parse error:", err);
+          alert("Failed to parse Excel file. Please ensure it's a valid Excel spreadsheet.");
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setCsvText(event.target.result);
+      };
+      reader.readAsText(file);
+    }
   };
 
   const handleCSVImport = async (e) => {
@@ -985,7 +1005,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
               <button className="btn btn-secondary" onClick={() => setShowCSVModal(true)}>
                 <Upload size={16} />
-                Import CSV
+                Import CSV / Excel
               </button>
               
               <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
@@ -1457,12 +1477,12 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         </div>
       )}
 
-      {/* CSV Import Modal */}
+      {/* CSV/Excel Import Modal */}
       {showCSVModal && (
         <div className="modal-overlay" onClick={() => { setShowCSVModal(false); setCsvText(''); }}>
           <div className="modal-content glass-panel" onClick={(e) => e.stopPropagation()} style={{ padding: '2rem', maxWidth: '650px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-              <h3 style={{ fontSize: '1.25rem' }}>Import Recipients from CSV</h3>
+              <h3 style={{ fontSize: '1.25rem' }}>Import Recipients from CSV / Excel</h3>
               <button 
                 type="button" 
                 className="btn btn-secondary" 
@@ -1475,7 +1495,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
             </div>
             
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '1.5rem', lineHeight: '1.4' }}>
-              Upload your CSV file directly, or paste your comma-separated rows below. Required header: <strong style={{ color: 'var(--text-primary)' }}>Name</strong>. Optional: <strong style={{ color: 'var(--text-primary)' }}>Facilitator, Project_Code, Language, Cert_ID</strong>.
+              Upload your CSV or Excel file directly, or paste your comma-separated rows below. Required header: <strong style={{ color: 'var(--text-primary)' }}>Name</strong>. Optional: <strong style={{ color: 'var(--text-primary)' }}>Facilitator, Project_Code, Language, Cert_ID</strong>.
             </p>
             
             <form onSubmit={handleCSVImport}>
@@ -1483,11 +1503,11 @@ export default function Dashboard({ showOnlyCompleted = false }) {
               <div className="form-group" style={{ marginBottom: '1rem', border: '1px dashed var(--border-color)', padding: '1rem', borderRadius: '6px', textAlign: 'center', background: 'rgba(255,255,255,0.01)' }}>
                 <label style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
                   <Upload size={24} style={{ color: 'var(--accent-gold)' }} />
-                  <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Click to Upload recipient list (.csv)</span>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Excel sheets can be exported as comma-separated CSV files</span>
+                  <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Click to Upload recipient list (.csv, .xlsx, .xls)</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Excel sheets (.xlsx, .xls) and CSV files are parsed automatically</span>
                   <input 
                     type="file" 
-                    accept=".csv" 
+                    accept=".csv, .xlsx, .xls" 
                     onChange={handleCSVFileSelect} 
                     style={{ display: 'none' }} 
                   />
