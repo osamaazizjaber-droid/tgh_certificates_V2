@@ -524,30 +524,147 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     }
   };
 
+  const renderCertificatePdf = async (row, preloadedBgEn = null, preloadedBgAr = null) => {
+    const layout = settings?.layouts?.[row.language.toLowerCase()] || settings?.layouts?.en;
+    if (!layout) {
+      throw new Error(`Layout configuration missing for language: ${row.language}`);
+    }
+
+    let bgImg = row.language.toLowerCase() === 'en' ? preloadedBgEn : preloadedBgAr;
+    if (!bgImg) {
+      const getTemplateUrl = (url, fallback) => {
+        if (!url || url.includes('nhost.run')) return fallback;
+        return url;
+      };
+      const fallbackUrl = row.language.toLowerCase() === 'ar' ? '/templates/certificate_ar.png' : '/templates/certificate_en.png';
+      const customUrl = row.language.toLowerCase() === 'ar' ? settings?.bg_image_ar : settings?.bg_image_en;
+      try {
+        bgImg = await loadImage(getTemplateUrl(customUrl, fallbackUrl));
+      } catch {
+        bgImg = await loadImage(fallbackUrl);
+      }
+    }
+
+    const scale = 3.0;
+    const canvas = document.createElement('canvas');
+    canvas.width = 800 * scale;
+    canvas.height = 565 * scale;
+    const ctx = canvas.getContext('2d');
+
+    ctx.drawImage(bgImg, 0, 0, 800 * scale, 565 * scale);
+
+    // Recipient Name (Centered)
+    ctx.fillStyle = layout.name.color || '#1a1d24';
+    const fontSizeScaled = parseFloat(layout.name.fontSize || 32) * scale;
+    ctx.font = `${layout.name.fontWeight || 'bold'} ${fontSizeScaled}px ${layout.name.fontFamily || 'Outfit'}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(row.name, layout.name.x * scale, layout.name.y * scale);
+
+    // Verification URL QR Code
+    const verifyUrl = `${window.location.protocol}//${window.location.host}/verify?id=${encodeURIComponent(row.cert_id)}`;
+    const qrSizeScaled = parseFloat(layout.qrCode.size || 100) * scale;
+    const qrDataUrl = await QRCode.toDataURL(verifyUrl, { margin: 1, width: qrSizeScaled });
+    const qrImg = await loadImage(qrDataUrl);
+    ctx.drawImage(qrImg, layout.qrCode.x * scale, layout.qrCode.y * scale, qrSizeScaled, qrSizeScaled);
+
+    // Draw Verification Label Text (below QR Code)
+    ctx.fillStyle = layout.name.color || '#1a1d24';
+    const labelFontSize = 10 * scale;
+    const labelFontFamily = row.language.toLowerCase() === 'ar' ? 'Cairo' : 'Outfit';
+    ctx.font = `600 ${labelFontSize}px ${labelFontFamily}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const labelText = row.language.toLowerCase() === 'ar' ? 'امسح هنا للتحقق' : 'Scan here to verify';
+    const labelX = (parseFloat(layout.qrCode.x) + parseFloat(layout.qrCode.size || 100) / 2) * scale;
+    const labelY = (parseFloat(layout.qrCode.y) + parseFloat(layout.qrCode.size || 100) + 8) * scale;
+    ctx.fillText(labelText, labelX, labelY);
+
+    // Convert to PDF
+    const pdf = new jsPDF({
+      orientation: 'landscape',
+      unit: 'px',
+      format: [800, 565]
+    });
+    pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 800, 565);
+    return pdf;
+  };
+
+  const handleDownloadSingle = async (row) => {
+    try {
+      setProcessingRows(prev => ({ ...prev, [row.id]: 'generating' }));
+      const safeName = (row.name || 'Recipient').replace(/[/\\?%*:|"<>]/g, '-').trim();
+      const filename = `${row.cert_id}_${safeName}.pdf`;
+
+      if (row.pdf_url && !row.pdf_url.includes('nhost.run')) {
+        const link = document.createElement("a");
+        link.href = row.pdf_url;
+        link.target = "_blank";
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+
+      const pdf = await renderCertificatePdf(row);
+      pdf.save(filename);
+    } catch (err) {
+      console.error("Failed to download single PDF:", err);
+      alert("Failed to download PDF: " + err.message);
+    } finally {
+      setProcessingRows(prev => {
+        const copy = { ...prev };
+        delete copy[row.id];
+        return copy;
+      });
+    }
+  };
+
   const downloadAsZip = async (rowsToDownload) => {
     const targetRows = Array.isArray(rowsToDownload)
       ? rowsToDownload
-      : recipients.filter(r => selectedIds.includes(r.id) && r.pdf_url);
+      : recipients.filter(r => selectedIds.includes(r.id) && (r.status === 'saved' || r.pdf_url));
 
     if (targetRows.length === 0) {
-      alert("No generated PDFs found to download.");
+      alert("No generated certificates found among selected rows to download.");
       return;
     }
 
     try {
       setImporting(true);
       const zip = new JSZip();
+
+      let bgImgEn = null;
+      let bgImgAr = null;
+      try {
+        if (targetRows.some(r => r.language.toUpperCase() === 'EN')) {
+          bgImgEn = await loadImage('/templates/certificate_en.png');
+        }
+        if (targetRows.some(r => r.language.toUpperCase() === 'AR')) {
+          bgImgAr = await loadImage('/templates/certificate_ar.png');
+        }
+      } catch (bgErr) {
+        console.warn("Background preload error for zip:", bgErr);
+      }
       
       for (const row of targetRows) {
-        // Fetch binary data from the S3/Nhost storage URL
-        const response = await fetch(row.pdf_url);
-        if (!response.ok) throw new Error(`Failed to download certificate for: ${row.name}`);
-        const blob = await response.blob();
-        
-        // Clean filename (remove characters invalid in Windows/macOS filenames)
-        const safeName = row.name.replace(/[/\\?%*:|"<>]/g, '-').trim();
+        const safeName = (row.name || 'Recipient').replace(/[/\\?%*:|"<>]/g, '-').trim();
         const filename = `${row.cert_id}_${safeName}.pdf`;
-        
+
+        if (row.pdf_url && !row.pdf_url.includes('nhost.run')) {
+          try {
+            const response = await fetch(row.pdf_url);
+            if (response.ok) {
+              const blob = await response.blob();
+              zip.file(filename, blob);
+              continue;
+            }
+          } catch (_) {}
+        }
+
+        const pdf = await renderCertificatePdf(row, bgImgEn, bgImgAr);
+        const blob = pdf.output('blob');
         zip.file(filename, blob);
       }
       
@@ -571,52 +688,27 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   const downloadIndividually = async (rowsToDownload) => {
     const targetRows = Array.isArray(rowsToDownload)
       ? rowsToDownload
-      : recipients.filter(r => selectedIds.includes(r.id) && r.pdf_url);
+      : recipients.filter(r => selectedIds.includes(r.id) && (r.status === 'saved' || r.pdf_url));
 
     if (targetRows.length === 0) {
-      alert("No generated PDFs found to download.");
+      alert("No generated certificates found to download.");
       return;
     }
     
     for (const row of targetRows) {
-      const link = document.createElement("a");
-      link.href = row.pdf_url;
-      link.target = "_blank";
-      link.download = `${row.cert_id}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
-      // Delay slightly between downloads so browser doesn't block them as popup spam
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await handleDownloadSingle(row);
+      await new Promise(resolve => setTimeout(resolve, 400));
     }
   };
 
-
-
   const generateCertificates = async () => {
-    console.log("generateCertificates: function triggered.");
-    console.log("generateCertificates: selectedIds =", selectedIds);
-    console.log("generateCertificates: recipients count =", recipients.length);
-
-    if (selectedIds.length === 0) {
-      console.warn("generateCertificates: selectedIds is empty, returning.");
-      return;
-    }
+    if (selectedIds.length === 0) return;
     if (!settings) {
-      console.error("generateCertificates: settings is null/undefined.");
       alert('Certificate layout settings are missing! Configure templates in the Designer tab.');
       return;
     }
 
-    if (!settings.bg_image_en && !settings.bg_image_ar) {
-      console.error("generateCertificates: background images are missing from settings config.");
-      alert("Template background images are missing! Please upload and save them in the Designer tab.");
-      return;
-    }
-
     const selectedRows = recipients.filter(r => selectedIds.includes(r.id));
-    console.log("generateCertificates: filtered selectedRows =", selectedRows);
 
     setIsGenerating(true);
     setIsPaused(false);
@@ -662,12 +754,13 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       return;
     }
     
+    const generatedFiles = [];
+
     for (let i = 0; i < selectedRows.length; i++) {
       const row = selectedRows[i];
 
       // Check cancellation and pause states
       if (cancelGenerationRef.current) {
-        console.log("generateCertificates: generation cancelled by user.");
         break;
       }
       while (pauseGenerationRef.current) {
@@ -675,68 +768,20 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         await new Promise(resolve => setTimeout(resolve, 300));
       }
       if (cancelGenerationRef.current) {
-        console.log("generateCertificates: generation cancelled by user.");
         break;
       }
 
       setProgressIndex(i + 1);
-      console.log(`generateCertificates: starting generation for ${row.name} (id: ${row.id}, cert_id: ${row.cert_id})`);
       setProcessingRows(prev => ({ ...prev, [row.id]: 'generating' }));
       
       await sheetsClient.updateStatus(row.id, 'generating', row.pdf_url || '');
-        
       setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'generating' } : r));
 
       try {
-        const layout = settings.layouts[row.language.toLowerCase()];
-        const bgImg = row.language.toLowerCase() === 'en' ? bgImgEn : bgImgAr;
-
-        if (!bgImg) {
-          throw new Error('Template background image is missing/failed to load for ' + row.language);
-        }
-
-        const scale = 3.0;
-        const canvas = document.createElement('canvas');
-        canvas.width = 800 * scale;
-        canvas.height = 565 * scale;
-        const ctx = canvas.getContext('2d');
-
-        ctx.drawImage(bgImg, 0, 0, 800 * scale, 565 * scale);
-
-        // Recipient Name (Centered)
-        ctx.fillStyle = layout.name.color || '#1a1d24';
-        const fontSizeScaled = parseFloat(layout.name.fontSize || 32) * scale;
-        ctx.font = `${layout.name.fontWeight || 'bold'} ${fontSizeScaled}px ${layout.name.fontFamily || 'Outfit'}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(row.name, layout.name.x * scale, layout.name.y * scale);
-
-        // Verification URL QR Code
-        const verifyUrl = `${window.location.protocol}//${window.location.host}/verify?id=${encodeURIComponent(row.cert_id)}`;
-        const qrSizeScaled = parseFloat(layout.qrCode.size || 100) * scale;
-        const qrDataUrl = await QRCode.toDataURL(verifyUrl, { margin: 1, width: qrSizeScaled });
-        const qrImg = await loadImage(qrDataUrl);
-        ctx.drawImage(qrImg, layout.qrCode.x * scale, layout.qrCode.y * scale, qrSizeScaled, qrSizeScaled);
-
-        // Draw Verification Label Text (below QR Code)
-        ctx.fillStyle = layout.name.color || '#1a1d24';
-        const labelFontSize = 10 * scale;
-        const labelFontFamily = row.language.toLowerCase() === 'ar' ? 'Cairo' : 'Outfit';
-        ctx.font = `600 ${labelFontSize}px ${labelFontFamily}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        const labelText = row.language.toLowerCase() === 'ar' ? 'امسح هنا للتحقق' : 'Scan here to verify';
-        const labelX = (parseFloat(layout.qrCode.x) + parseFloat(layout.qrCode.size || 100) / 2) * scale;
-        const labelY = (parseFloat(layout.qrCode.y) + parseFloat(layout.qrCode.size || 100) + 8) * scale;
-        ctx.fillText(labelText, labelX, labelY);
-
-        // Convert to PDF
-        const pdf = new jsPDF({
-          orientation: 'landscape',
-          unit: 'px',
-          format: [800, 565]
-        });
-        pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 800, 565);
+        const pdf = await renderCertificatePdf(row, bgImgEn, bgImgAr);
+        const safeName = (row.name || 'Recipient').replace(/[/\\?%*:|"<>]/g, '-').trim();
+        const filename = `${row.cert_id}_${safeName}.pdf`;
+        generatedFiles.push({ filename, blob: pdf.output('blob'), pdf });
 
         // Update database row status in Google Sheet
         await sheetsClient.updateStatus(row.id, 'saved', row.pdf_url || '');
@@ -745,9 +790,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         setProcessingRows(prev => ({ ...prev, [row.id]: 'success' }));
       } catch (err) {
         console.error("Failed to generate for: " + row.name, err);
-        
         await sheetsClient.updateStatus(row.id, 'failed', row.pdf_url || '');
-          
         setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'failed' } : r));
         setProcessingRows(prev => ({ ...prev, [row.id]: 'error' }));
       }
@@ -755,6 +798,28 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     
     setIsGenerating(false);
     setIsPaused(false);
+
+    // Automatically trigger download of newly generated certificates
+    if (generatedFiles.length > 1) {
+      try {
+        const zip = new JSZip();
+        generatedFiles.forEach(f => zip.file(f.filename, f.blob));
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(zipBlob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `certificates_generated_${new Date().toISOString().slice(0, 10)}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch (zErr) {
+        console.error("Auto-download zip failed:", zErr);
+      }
+    } else if (generatedFiles.length === 1) {
+      generatedFiles[0].pdf.save(generatedFiles[0].filename);
+    }
+
     setSelectedIds([]);
   };
 
@@ -1180,13 +1245,13 @@ export default function Dashboard({ showOnlyCompleted = false }) {
                 </button>
               )}
 
-              {recipients.some(r => selectedIds.includes(r.id) && r.pdf_url) && (
+              {recipients.some(r => selectedIds.includes(r.id) && (r.status === 'saved' || r.pdf_url)) && (
                 <>
-                  <button className="btn btn-secondary" onClick={downloadIndividually} style={{ padding: '0.4rem 1rem', fontSize: '0.8rem', borderColor: 'var(--accent-emerald)', color: 'var(--accent-emerald)' }}>
+                  <button className="btn btn-secondary" onClick={() => downloadIndividually()} style={{ padding: '0.4rem 1rem', fontSize: '0.8rem', borderColor: 'var(--accent-emerald)', color: 'var(--accent-emerald)' }}>
                     <Download size={14} />
                     Download Single
                   </button>
-                  <button className="btn btn-secondary" onClick={downloadAsZip} style={{ padding: '0.4rem 1rem', fontSize: '0.8rem', borderColor: 'var(--accent-gold)', color: 'var(--accent-gold)' }}>
+                  <button className="btn btn-secondary" onClick={() => downloadAsZip()} style={{ padding: '0.4rem 1rem', fontSize: '0.8rem', borderColor: 'var(--accent-gold)', color: 'var(--accent-gold)' }}>
                     <Download size={14} />
                     Download ZIP
                   </button>
@@ -1275,16 +1340,24 @@ export default function Dashboard({ showOnlyCompleted = false }) {
                           >
                             <Edit2 size={16} />
                           </button>
-                          {r.pdf_url && (
-                            <>
-                              <a href={r.pdf_url} target="_blank" rel="noreferrer" title="Open PDF">
-                                <ExternalLink size={16} style={{ color: 'var(--accent-gold)' }} />
-                              </a>
-                              <a href={`/verify?id=${r.cert_id}`} target="_blank" rel="noreferrer" title="Verify Route">
-                                <CheckCircle size={16} style={{ color: 'var(--accent-indigo)' }} />
-                              </a>
-                            </>
+                          {r.status === 'saved' && (
+                            <button 
+                              type="button"
+                              onClick={() => handleDownloadSingle(r)}
+                              style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--accent-gold)', display: 'inline-flex', alignItems: 'center' }}
+                              title="Download Certificate PDF"
+                            >
+                              <Download size={16} />
+                            </button>
                           )}
+                          {r.pdf_url && (
+                            <a href={r.pdf_url} target="_blank" rel="noreferrer" title="Open Cloud PDF">
+                              <ExternalLink size={16} style={{ color: 'var(--accent-emerald)' }} />
+                            </a>
+                          )}
+                          <a href={`/verify?id=${r.cert_id}`} target="_blank" rel="noreferrer" title="Verify Route">
+                            <CheckCircle size={16} style={{ color: 'var(--accent-indigo)' }} />
+                          </a>
                           {r.status !== 'pending' && (
                             <button 
                               onClick={() => handleResetStatus(r)}

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import sheetsClient from '../sheetsClient';
+import QRCode from 'qrcode';
+import { jsPDF } from 'jspdf';
 import { CheckCircle2, XCircle, Search, ExternalLink, Download, ShieldCheck } from 'lucide-react';
 
 export default function Verification() {
@@ -8,6 +10,7 @@ export default function Verification() {
   const [result, setResult] = useState(null); // 'verified', 'not_found', or null
   const [certData, setCertData] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -56,6 +59,83 @@ export default function Verification() {
       setErrorMsg('An error occurred during verification: ' + e.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!certData) return;
+    try {
+      setDownloadingPdf(true);
+      if (certData.pdf_url && !certData.pdf_url.includes('nhost.run')) {
+        window.open(certData.pdf_url, '_blank');
+        return;
+      }
+
+      const settings = await sheetsClient.getSettings();
+      const layout = settings?.layouts?.[certData.language?.toLowerCase()] || settings?.layouts?.en;
+      const isAr = certData.language?.toUpperCase() === 'AR';
+      const bgUrl = isAr ? (settings?.bg_image_ar || '/templates/certificate_ar.png') : (settings?.bg_image_en || '/templates/certificate_en.png');
+      const safeBgUrl = (!bgUrl || bgUrl.includes('nhost.run')) ? (isAr ? '/templates/certificate_ar.png' : '/templates/certificate_en.png') : bgUrl;
+
+      const img = new Image();
+      if (safeBgUrl.startsWith('http://') || safeBgUrl.startsWith('https://')) {
+        img.crossOrigin = 'anonymous';
+      }
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = () => {
+          img.onload = res;
+          img.onerror = rej;
+          img.src = isAr ? '/templates/certificate_ar.png' : '/templates/certificate_en.png';
+        };
+        img.src = safeBgUrl;
+      });
+
+      const scale = 3.0;
+      const canvas = document.createElement('canvas');
+      canvas.width = 800 * scale;
+      canvas.height = 565 * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, 800 * scale, 565 * scale);
+
+      ctx.fillStyle = layout?.name?.color || '#1a1d24';
+      const fontSizeScaled = parseFloat(layout?.name?.fontSize || 32) * scale;
+      ctx.font = `${layout?.name?.fontWeight || 'bold'} ${fontSizeScaled}px ${layout?.name?.fontFamily || 'Outfit'}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(certData.name, (layout?.name?.x || 400) * scale, (layout?.name?.y || 260) * scale);
+
+      const verifyUrl = window.location.href;
+      const qrSizeScaled = parseFloat(layout?.qrCode?.size || 100) * scale;
+      const qrDataUrl = await QRCode.toDataURL(verifyUrl, { margin: 1, width: qrSizeScaled });
+      const qrImg = new Image();
+      await new Promise(res => { qrImg.onload = res; qrImg.src = qrDataUrl; });
+      ctx.drawImage(qrImg, (layout?.qrCode?.x || 650) * scale, (layout?.qrCode?.y || 450) * scale, qrSizeScaled, qrSizeScaled);
+
+      ctx.fillStyle = layout?.name?.color || '#1a1d24';
+      const labelFontSize = 10 * scale;
+      const labelFontFamily = isAr ? 'Cairo' : 'Outfit';
+      ctx.font = `600 ${labelFontSize}px ${labelFontFamily}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const labelText = isAr ? 'امسح هنا للتحقق' : 'Scan here to verify';
+      const labelX = (parseFloat(layout?.qrCode?.x || 650) + parseFloat(layout?.qrCode?.size || 100) / 2) * scale;
+      const labelY = (parseFloat(layout?.qrCode?.y || 450) + parseFloat(layout?.qrCode?.size || 100) + 8) * scale;
+      ctx.fillText(labelText, labelX, labelY);
+
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'px',
+        format: [800, 565]
+      });
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 800, 565);
+      const safeName = (certData.name || 'Certificate').replace(/[/\\?%*:|"<>]/g, '-').trim();
+      pdf.save(`${certData.cert_id}_${safeName}.pdf`);
+    } catch (e) {
+      console.error(e);
+      alert("Error generating certificate PDF: " + e.message);
+    } finally {
+      setDownloadingPdf(false);
     }
   };
 
@@ -157,33 +237,30 @@ export default function Verification() {
               </div>
             </div>
 
-            {certData.pdf_url ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%' }}>
+              <button 
+                type="button" 
+                onClick={handleDownloadPdf}
+                disabled={downloadingPdf}
+                className="btn btn-primary"
+                style={{ width: '100%' }}
+              >
+                <Download size={16} />
+                {downloadingPdf ? 'Generating PDF...' : 'Download Official Certificate PDF'}
+              </button>
+              {certData.pdf_url && !certData.pdf_url.includes('nhost.run') && (
                 <a 
                   href={certData.pdf_url} 
                   target="_blank" 
                   rel="noreferrer" 
-                  className="btn btn-primary"
-                  style={{ width: '100%' }}
-                >
-                  <ExternalLink size={16} />
-                  View Original Certificate PDF
-                </a>
-                <a 
-                  href={certData.pdf_url} 
-                  download 
                   className="btn btn-secondary"
                   style={{ width: '100%' }}
                 >
-                  <Download size={16} />
-                  Download PDF
+                  <ExternalLink size={16} />
+                  Open Cloud Link
                 </a>
-              </div>
-            ) : (
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontStyle: 'italic' }}>
-                Note: PDF file is being generated or was deleted. Please contact administration.
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
 
