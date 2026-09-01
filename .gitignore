@@ -30,3 +30,7 @@ dist-ssr/
 .env.local
 .env.development
 .env.test
+
+# Local backups
+nhost_backup.json
+

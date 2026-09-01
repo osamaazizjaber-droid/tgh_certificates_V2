@@ -1,38 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { nhost } from '../nhostClient';
+import sheetsClient from '../sheetsClient';
 import { Save, RefreshCw, Upload, Image as ImageIcon, Settings, Languages, Maximize2 } from 'lucide-react';
-
-const GET_SETTINGS_QUERY = `
-  query GetSettings {
-    settings_by_pk(id: "default") {
-      id
-      cert_prefix
-      layouts
-      bg_image_en
-      bg_image_ar
-    }
-  }
-`;
-
-const UPSERT_SETTINGS_MUTATION = `
-  mutation UpsertSettings($id: String!, $cert_prefix: String!, $bg_image_en: String, $bg_image_ar: String, $layouts: jsonb!) {
-    insert_settings_one(
-      object: {
-        id: $id,
-        cert_prefix: $cert_prefix,
-        bg_image_en: $bg_image_en,
-        bg_image_ar: $bg_image_ar,
-        layouts: $layouts
-      },
-      on_conflict: {
-        constraint: settings_pkey,
-        update_columns: [cert_prefix, bg_image_en, bg_image_ar, layouts]
-      }
-    ) {
-      id
-    }
-  }
-`;
 
 export default function Designer() {
   const [config, setConfig] = useState(() => {
@@ -154,20 +122,14 @@ export default function Designer() {
       if (!hasCache) {
         setLoading(true);
       }
-      if (!nhost) {
-        setStatusMsg('Nhost is not connected. Check environment variables in .env file.');
+      if (!sheetsClient.isConfigured) {
+        setStatusMsg('Google Sheets API is not configured. Check VITE_GOOGLE_SHEETS_API_URL in .env.');
         setLoading(false);
         return;
       }
 
-      const { data, error } = await nhost.graphql.request(GET_SETTINGS_QUERY);
+      const settingsData = await sheetsClient.getSettings();
 
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
-
-      const settingsData = data?.settings_by_pk;
       let finalConfig = null;
       if (settingsData) {
         const mergedLayouts = {
@@ -207,25 +169,24 @@ export default function Designer() {
     try {
       setSaving(true);
       setStatusMsg('');
-      if (!nhost) {
-        alert('Nhost client is not connected!');
+      if (!sheetsClient.isConfigured) {
+        alert('Google Sheets API is not configured!');
         setSaving(false);
         return;
       }
 
-      const { error } = await nhost.graphql.request(UPSERT_SETTINGS_MUTATION, {
-        id: config.id,
+      const res = await sheetsClient.saveSettings({
+        id: config.id || 'default',
         cert_prefix: config.cert_prefix,
         bg_image_en: config.bg_image_en || '',
         bg_image_ar: config.bg_image_ar || '',
         layouts: config.layouts
       });
 
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
+      if (res && res.error) {
+        throw new Error(res.error);
       }
-      setStatusMsg('Settings saved successfully! ✅');
+      setStatusMsg('Settings saved successfully to Google Sheets! ✅');
       localStorage.setItem('tgh_settings', JSON.stringify(config));
       setTimeout(() => setStatusMsg(''), 4000);
     } catch (e) {
@@ -250,32 +211,28 @@ export default function Designer() {
     });
   };
 
-  const handleImageUpload = async (langType, e) => {
+  const handleImageUpload = (langType, e) => {
     const file = e.target.files[0];
     if (!file) return;
-    
+
     try {
-      setStatusMsg('Uploading template image to storage...');
-      const uploadRes = await nhost.storage.upload({
-        file: file,
-        bucketId: 'default'
-      });
-      
-      if (uploadRes.error) {
-        throw uploadRes.error;
-      }
-      
-      const fileId = uploadRes.fileMetadata.id;
-      const publicUrl = nhost.storage.getPublicUrl({ fileId });
-      
-      setConfig(prev => ({
-        ...prev,
-        [langType === 'en' ? 'bg_image_en' : 'bg_image_ar']: publicUrl
-      }));
-      setStatusMsg('Template background updated! ✅');
-      setTimeout(() => setStatusMsg(''), 4000);
+      setStatusMsg('Loading image...');
+      const reader = new FileReader();
+      reader.onload = (uploadEvent) => {
+        const base64Url = uploadEvent.target.result;
+        setConfig(prev => ({
+          ...prev,
+          [langType === 'en' ? 'bg_image_en' : 'bg_image_ar']: base64Url
+        }));
+        setStatusMsg('Template background updated! Click "Save Settings" to persist. ✅');
+        setTimeout(() => setStatusMsg(''), 4000);
+      };
+      reader.onerror = (readErr) => {
+        setStatusMsg('Failed to read image file: ' + readErr);
+      };
+      reader.readAsDataURL(file);
     } catch (err) {
-      console.error("Failed to upload background template:", err);
+      console.error("Failed to load background template:", err);
       setStatusMsg('Upload failed: ' + err.message);
     }
   };

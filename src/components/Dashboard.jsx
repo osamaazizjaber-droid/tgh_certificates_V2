@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { nhost } from '../nhostClient';
+import sheetsClient from '../sheetsClient';
 import QRCode from 'qrcode';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
@@ -9,162 +9,6 @@ import {
   Upload, Download, Search, Filter, Database, RefreshCw, Settings, ShieldAlert,
   ExternalLink, RotateCcw, Edit2
 } from 'lucide-react';
-
-const FETCH_DATA_QUERY = `
-  query FetchData {
-    settings_by_pk(id: "default") {
-      id
-      cert_prefix
-      layouts
-      bg_image_en
-      bg_image_ar
-    }
-    certificates(order_by: {created_at: desc}) {
-      id
-      cert_id
-      name
-      facilitator
-      project_code
-      batch
-      status
-      pdf_url
-      language
-      created_at
-    }
-  }
-`;
-
-const FETCH_BG_IMAGES_QUERY = `
-  query FetchBgImages {
-    settings_by_pk(id: "default") {
-      bg_image_en
-      bg_image_ar
-    }
-  }
-`;
-
-const INSERT_RECIPIENT_MUTATION = `
-  mutation InsertRecipient($name: String!, $facilitator: String!, $project_code: String!, $batch: String!, $language: String!, $cert_id: String!) {
-    insert_certificates_one(object: {
-      name: $name,
-      facilitator: $facilitator,
-      project_code: $project_code,
-      batch: $batch,
-      language: $language,
-      cert_id: $cert_id,
-      status: "pending"
-    }) {
-      id
-      cert_id
-      name
-      facilitator
-      project_code
-      batch
-      status
-      pdf_url
-      language
-      created_at
-    }
-  }
-`;
-
-const INSERT_RECIPIENTS_MUTATION = `
-  mutation InsertRecipients($objects: [certificates_insert_input!]!) {
-    insert_certificates(objects: $objects) {
-      returning {
-        id
-        cert_id
-        name
-        facilitator
-        project_code
-        batch
-        status
-        pdf_url
-        language
-        created_at
-      }
-    }
-  }
-`;
-
-const DELETE_RECIPIENTS_MUTATION = `
-  mutation DeleteRecipients($ids: [uuid!]!) {
-    delete_certificates(where: {id: {_in: $ids}}) {
-      returning {
-        id
-        pdf_url
-      }
-    }
-  }
-`;
-
-const DELETE_ALL_RECIPIENTS_MUTATION = `
-  mutation DeleteAllRecipients {
-    delete_certificates(where: {}) {
-      returning {
-        id
-        pdf_url
-      }
-    }
-  }
-`;
-
-const UPDATE_STATUS_MUTATION = `
-  mutation UpdateStatus($id: uuid!, $status: String!, $pdf_url: String) {
-    update_certificates_by_pk(
-      pk_columns: {id: $id},
-      _set: {status: $status, pdf_url: $pdf_url}
-    ) {
-      id
-      status
-      pdf_url
-    }
-  }
-`;
-
-const RESET_STATUSES_MUTATION = `
-  mutation ResetStatuses($ids: [uuid!]!) {
-    update_certificates(
-      where: {id: {_in: $ids}},
-      _set: {status: "pending", pdf_url: null}
-    ) {
-      returning {
-        id
-        status
-        pdf_url
-      }
-    }
-  }
-`;
-
-const UPDATE_RECIPIENT_MUTATION = `
-  mutation UpdateRecipient($id: uuid!, $name: String!, $facilitator: String!, $project_code: String!, $batch: String!, $language: String!, $cert_id: String!, $status: String!, $pdf_url: String) {
-    update_certificates_by_pk(
-      pk_columns: {id: $id},
-      _set: {
-        name: $name,
-        facilitator: $facilitator,
-        project_code: $project_code,
-        batch: $batch,
-        language: $language,
-        cert_id: $cert_id,
-        status: $status,
-        pdf_url: $pdf_url
-      }
-    ) {
-      id
-      cert_id
-      name
-      facilitator
-      project_code
-      batch
-      status
-      pdf_url
-      language
-      created_at
-    }
-  }
-`;
 
 export default function Dashboard({ showOnlyCompleted = false }) {
   const [recipients, setRecipients] = useState(() => {
@@ -253,7 +97,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   };
 
   useEffect(() => {
-    if (nhost) {
+    if (sheetsClient.isConfigured) {
       fetchData();
     }
   }, []);
@@ -376,15 +220,10 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         setLoading(true);
       }
       
-      const { data, error } = await nhost.graphql.request(FETCH_DATA_QUERY);
+      const res = await sheetsClient.fetchData();
       
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
-      
-      const fetchedSettings = data?.settings_by_pk || null;
-      const fetchedRecipients = data?.certificates || [];
+      const fetchedSettings = res.settings || null;
+      const fetchedRecipients = res.certificates || [];
 
       setSettings(fetchedSettings);
       setRecipients(fetchedRecipients);
@@ -395,7 +234,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       console.error("fetchData error:", e);
       const hasCache = localStorage.getItem('tgh_recipients') && localStorage.getItem('tgh_settings');
       if (!hasCache) {
-        alert('Error fetching data from Nhost: ' + e.message);
+        alert('Error fetching data from Google Sheets: ' + e.message);
       }
     } finally {
       setLoading(false);
@@ -407,24 +246,23 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     try {
       const finalCertId = newRecipient.cert_id.trim() || generateNextCertId();
       
-      const { data, error } = await nhost.graphql.request(INSERT_RECIPIENT_MUTATION, {
+      const recipientObj = {
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('rec_' + Date.now()),
         name: newRecipient.name.trim(),
         facilitator: newRecipient.facilitator.trim(),
         project_code: newRecipient.project_code.trim(),
         batch: newRecipient.batch.trim(),
         language: newRecipient.language,
-        cert_id: finalCertId
-      });
+        cert_id: finalCertId,
+        status: 'pending',
+        pdf_url: '',
+        metadata: {},
+        created_at: new Date().toISOString()
+      };
 
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
-      
-      const inserted = data?.insert_certificates_one;
-      if (inserted) {
-        setRecipients(prev => [inserted, ...prev]);
-      }
+      await sheetsClient.insertRecipient(recipientObj);
+
+      setRecipients(prev => [recipientObj, ...prev]);
       setShowAddModal(false);
       setNewRecipient({ name: '', facilitator: '', project_code: '', batch: '', language: 'EN', cert_id: '' });
     } catch (e) {
@@ -457,19 +295,15 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       let resetPdfUrl = editingRecipient.pdf_url;
       
       if (resetRequired) {
-        if (confirm("You modified certificate details on an already generated certificate. Saving will delete the old PDF and reset the status to 'Pending' so a new one can be generated. Do you want to proceed?")) {
+        if (confirm("You modified certificate details on an already generated certificate. Saving will reset the status to 'Pending' so a new one can be generated. Do you want to proceed?")) {
           resetStatus = 'pending';
-          resetPdfUrl = null;
-          if (editingRecipient.pdf_url) {
-            await deletePdfFromStorage(editingRecipient.pdf_url);
-          }
+          resetPdfUrl = '';
         } else {
           return;
         }
       }
 
-      const { data, error } = await nhost.graphql.request(UPDATE_RECIPIENT_MUTATION, {
-        id: editingRecipient.id,
+      await sheetsClient.updateRecipient(editingRecipient.id, {
         name: editingRecipient.name.trim(),
         facilitator: editingRecipient.facilitator.trim(),
         project_code: editingRecipient.project_code.trim(),
@@ -477,18 +311,22 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         language: editingRecipient.language,
         cert_id: editingRecipient.cert_id.trim(),
         status: resetStatus,
-        pdf_url: resetPdfUrl
+        pdf_url: resetPdfUrl || ''
       });
 
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
+      const updatedRecipient = {
+        ...editingRecipient,
+        name: editingRecipient.name.trim(),
+        facilitator: editingRecipient.facilitator.trim(),
+        project_code: editingRecipient.project_code.trim(),
+        batch: editingRecipient.batch.trim(),
+        language: editingRecipient.language,
+        cert_id: editingRecipient.cert_id.trim(),
+        status: resetStatus,
+        pdf_url: resetPdfUrl || ''
+      };
 
-      const finalUpdated = data?.update_certificates_by_pk;
-      if (finalUpdated) {
-        setRecipients(prev => prev.map(r => r.id === finalUpdated.id ? finalUpdated : r));
-      }
+      setRecipients(prev => prev.map(r => r.id === updatedRecipient.id ? updatedRecipient : r));
       setEditingRecipient(null);
     } catch (e) {
       console.error(e);
@@ -568,29 +406,25 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       setImporting(true);
 
       const objects = validRows.map(r => ({
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('rec_' + Math.random().toString(36).substring(2, 9)),
         name: r.name.trim(),
         facilitator: r.facilitator.trim(),
         project_code: r.project_code.trim(),
         batch: r.batch.trim(),
         language: r.language,
         cert_id: r.cert_id.trim(),
-        status: 'pending'
+        status: 'pending',
+        pdf_url: '',
+        metadata: {},
+        created_at: new Date().toISOString()
       }));
 
-      const { data, error } = await nhost.graphql.request(INSERT_RECIPIENTS_MUTATION, {
-        objects
-      });
-
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
+      await sheetsClient.batchInsertRecipients(objects);
       
-      const insertedList = data?.insert_certificates?.returning || [];
-      setRecipients(prev => [...insertedList, ...prev]);
+      setRecipients(prev => [...objects, ...prev]);
       setShowCSVModal(false);
       setCsvText('');
-      alert(`Imported ${insertedList.length} records successfully!`);
+      alert(`Imported ${objects.length} records successfully to Google Sheets!`);
     } catch (e) {
       console.error(e);
       alert('Import failed: ' + e.message);
@@ -604,28 +438,9 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     if (!confirm(`Are you sure you want to delete ${selectedIds.length} recipient(s)?`)) return;
 
     try {
-      const { data, error } = await nhost.graphql.request(DELETE_RECIPIENTS_MUTATION, {
-        ids: selectedIds
-      });
-
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
-
-      const deletedRows = data?.delete_certificates?.returning || [];
+      await sheetsClient.deleteRecipients(selectedIds);
       setRecipients(prev => prev.filter(r => !selectedIds.includes(r.id)));
       setSelectedIds([]);
-      
-      for (const row of deletedRows) {
-        if (row.pdf_url) {
-          const parts = row.pdf_url.split('/v1/files/');
-          const fileId = parts.length > 1 ? parts[1] : null;
-          if (fileId) {
-            await nhost.storage.delete({ fileId });
-          }
-        }
-      }
     } catch (e) {
       console.error(e);
       alert('Delete failed: ' + e.message);
@@ -633,40 +448,18 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   };
 
   const deletePdfFromStorage = async (pdfUrl) => {
-    if (!pdfUrl) return;
-    try {
-      const parts = pdfUrl.split('/v1/files/');
-      const fileId = parts.length > 1 ? parts[1] : null;
-      if (fileId) {
-        await nhost.storage.delete({ fileId });
-      }
-    } catch (err) {
-      console.error(`Failed to delete PDF from storage for URL ${pdfUrl}:`, err);
-    }
+    // No-op for Google Sheets
   };
 
   const handleResetStatus = async (row) => {
-    if (!confirm(`Are you sure you want to undo generation for ${row.name}? This will delete the generated PDF and reset the status to pending.`)) return;
+    if (!confirm(`Are you sure you want to undo generation for ${row.name}? This will reset the status to pending.`)) return;
     
     try {
       setProcessingRows(prev => ({ ...prev, [row.id]: 'generating' }));
       
-      const { error } = await nhost.graphql.request(UPDATE_STATUS_MUTATION, {
-        id: row.id,
-        status: 'pending',
-        pdf_url: null
-      });
+      await sheetsClient.updateStatus(row.id, 'pending', '');
 
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
-
-      if (row.pdf_url) {
-        await deletePdfFromStorage(row.pdf_url);
-      }
-
-      setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'pending', pdf_url: null } : r));
+      setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'pending', pdf_url: '' } : r));
     } catch (e) {
       console.error(e);
       alert('Failed to reset status: ' + e.message);
@@ -683,30 +476,17 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     const targetRows = recipients.filter(r => selectedIds.includes(r.id) && r.status !== 'pending');
     if (targetRows.length === 0) return;
     
-    if (!confirm(`Are you sure you want to undo generation for the ${targetRows.length} selected recipient(s)? This will delete their generated PDFs and reset their statuses back to pending.`)) return;
+    if (!confirm(`Are you sure you want to undo generation for the ${targetRows.length} selected recipient(s)? This will reset their statuses back to pending.`)) return;
 
     try {
       setImporting(true);
       
       const idsToReset = targetRows.map(r => r.id);
       
-      const { error } = await nhost.graphql.request(RESET_STATUSES_MUTATION, {
-        ids: idsToReset
-      });
-
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
-
-      for (const row of targetRows) {
-        if (row.pdf_url) {
-          await deletePdfFromStorage(row.pdf_url);
-        }
-      }
+      await sheetsClient.resetStatuses(idsToReset);
 
       setRecipients(prev => 
-        prev.map(r => idsToReset.includes(r.id) ? { ...r, status: 'pending', pdf_url: null } : r)
+        prev.map(r => idsToReset.includes(r.id) ? { ...r, status: 'pending', pdf_url: '' } : r)
       );
       
       setSelectedIds([]);
@@ -721,7 +501,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
   const handleDeleteAll = async () => {
     if (recipients.length === 0) return;
-    if (!confirm(`WARNING: Are you sure you want to delete ALL ${recipients.length} recipient records? This will permanently delete them from the database and remove all associated PDF certificates from storage.`)) return;
+    if (!confirm(`WARNING: Are you sure you want to delete ALL ${recipients.length} recipient records? This will permanently delete them from the Google Sheet.`)) return;
     
     const confirmPhrase = prompt('To confirm deletion of all records, please type DELETE below:');
     if (confirmPhrase !== 'DELETE') {
@@ -731,32 +511,11 @@ export default function Dashboard({ showOnlyCompleted = false }) {
 
     try {
       setLoading(true);
-      const { data, error } = await nhost.graphql.request(DELETE_ALL_RECIPIENTS_MUTATION);
+      await sheetsClient.deleteAllRecipients();
 
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
-      }
-
-      const deletedRows = data?.delete_certificates?.returning || [];
       setRecipients([]);
       setSelectedIds([]);
-      
-      // Delete all generated PDFs in storage
-      for (const row of deletedRows) {
-        if (row.pdf_url) {
-          const parts = row.pdf_url.split('/v1/files/');
-          const fileId = parts.length > 1 ? parts[1] : null;
-          if (fileId) {
-            try {
-              await nhost.storage.delete({ fileId });
-            } catch (storageErr) {
-              console.error(`Failed to delete storage file ${fileId}:`, storageErr);
-            }
-          }
-        }
-      }
-      alert('All recipient records and storage files have been deleted successfully!');
+      alert('All recipient records have been deleted successfully from Google Sheets!');
     } catch (e) {
       console.error(e);
       alert('Delete All failed: ' + e.message);
@@ -909,11 +668,7 @@ export default function Dashboard({ showOnlyCompleted = false }) {
       console.log(`generateCertificates: starting generation for ${row.name} (id: ${row.id}, cert_id: ${row.cert_id})`);
       setProcessingRows(prev => ({ ...prev, [row.id]: 'generating' }));
       
-      await nhost.graphql.request(UPDATE_STATUS_MUTATION, {
-        id: row.id,
-        status: 'generating',
-        pdf_url: row.pdf_url
-      });
+      await sheetsClient.updateStatus(row.id, 'generating', row.pdf_url || '');
         
       setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'generating' } : r));
 
@@ -967,42 +722,16 @@ export default function Dashboard({ showOnlyCompleted = false }) {
           format: [800, 565]
         });
         pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 800, 565);
-        const pdfBlob = pdf.output('blob');
 
-        // Prepare file upload to Nhost Storage
-        const fileObj = new File([pdfBlob], `${row.cert_id}.pdf`, { type: 'application/pdf' });
-        const uploadRes = await nhost.storage.upload({
-          file: fileObj,
-          bucketId: 'default'
-        });
+        // Update database row status in Google Sheet
+        await sheetsClient.updateStatus(row.id, 'saved', row.pdf_url || '');
 
-        if (uploadRes.error) throw uploadRes.error;
-        
-        const fileId = uploadRes.fileMetadata.id;
-        const publicUrl = nhost.storage.getPublicUrl({ fileId });
-
-        // Update database row status and link
-        const { error: dbUpdateError } = await nhost.graphql.request(UPDATE_STATUS_MUTATION, {
-          id: row.id,
-          status: 'saved',
-          pdf_url: publicUrl
-        });
-
-        if (dbUpdateError) {
-          const errMsg = Array.isArray(dbUpdateError) ? dbUpdateError.map(e => e.message).join(', ') : dbUpdateError.message;
-          throw new Error(errMsg);
-        }
-
-        setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'saved', pdf_url: publicUrl } : r));
+        setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'saved' } : r));
         setProcessingRows(prev => ({ ...prev, [row.id]: 'success' }));
       } catch (err) {
         console.error("Failed to generate for: " + row.name, err);
         
-        await nhost.graphql.request(UPDATE_STATUS_MUTATION, {
-          id: row.id,
-          status: 'failed',
-          pdf_url: row.pdf_url
-        });
+        await sheetsClient.updateStatus(row.id, 'failed', row.pdf_url || '');
           
         setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'failed' } : r));
         setProcessingRows(prev => ({ ...prev, [row.id]: 'error' }));
@@ -1222,13 +951,13 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         </div>
       )}
 
-      {!nhost && (
+      {!sheetsClient.isConfigured && (
         <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '4px solid var(--accent-rose)', display: 'flex', gap: '1rem', alignItems: 'center' }}>
           <ShieldAlert size={32} style={{ color: 'var(--accent-rose)' }} />
           <div>
-            <h4 style={{ color: 'var(--text-primary)', marginBottom: '0.25rem' }}>Nhost Connection Required</h4>
+            <h4 style={{ color: 'var(--text-primary)', marginBottom: '0.25rem' }}>Google Sheets API Connection Required</h4>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-              The application requires an active Nhost backend connection. Please ensure the VITE_NHOST_SUBDOMAIN and VITE_NHOST_REGION variables are configured in the .env file.
+              The application requires an active Google Sheets API connection. Please ensure the VITE_GOOGLE_SHEETS_API_URL variable is configured in the .env file.
             </p>
           </div>
         </div>

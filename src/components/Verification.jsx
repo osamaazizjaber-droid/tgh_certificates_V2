@@ -1,22 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { nhost } from '../nhostClient';
+import sheetsClient from '../sheetsClient';
 import { CheckCircle2, XCircle, Search, ExternalLink, Download, ShieldCheck } from 'lucide-react';
-
-const VERIFY_CERTIFICATE_QUERY = `
-  query VerifyCertificate($cert_id: String!) {
-    certificates(where: {cert_id: {_eq: $cert_id}}) {
-      id
-      cert_id
-      name
-      facilitator
-      project_code
-      status
-      pdf_url
-      language
-      created_at
-    }
-  }
-`;
 
 export default function Verification() {
   const [certId, setCertId] = useState('');
@@ -50,25 +34,21 @@ export default function Verification() {
       setCertData(null);
       setErrorMsg('');
 
-      if (!nhost) {
-        setErrorMsg('Nhost is not connected.');
+      if (!sheetsClient.isConfigured) {
+        setErrorMsg('Google Sheets database is not configured.');
         return;
       }
 
-      const { data, error } = await nhost.graphql.request(VERIFY_CERTIFICATE_QUERY, {
-        cert_id: idToVerify.trim()
-      });
+      const res = await sheetsClient.verifyCertificate(idToVerify.trim());
 
-      if (error) {
-        const errMsg = Array.isArray(error) ? error.map(e => e.message).join(', ') : error.message;
-        throw new Error(errMsg);
+      if (res.error) {
+        throw new Error(res.error);
       }
 
-      const list = data?.certificates || [];
-      if (list.length === 0) {
+      if (!res.certificate) {
         setResult('not_found');
       } else {
-        setCertData(list[0]);
+        setCertData(res.certificate);
         setResult('verified');
       }
     } catch (e) {
