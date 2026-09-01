@@ -631,18 +631,33 @@ export default function Dashboard({ showOnlyCompleted = false }) {
     const hasEn = selectedRows.some(r => r.language.toUpperCase() === 'EN');
     const hasAr = selectedRows.some(r => r.language.toUpperCase() === 'AR');
 
+    const getTemplateUrl = (url, fallback) => {
+      if (!url || url.includes('nhost.run')) return fallback;
+      return url;
+    };
+
     try {
-      if (hasEn && settings.bg_image_en) {
-        const corsBgUrl = settings.bg_image_en + (settings.bg_image_en.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
-        bgImgEn = await loadImage(corsBgUrl);
+      if (hasEn) {
+        const enUrl = getTemplateUrl(settings?.bg_image_en, '/templates/certificate_en.png');
+        try {
+          bgImgEn = await loadImage(enUrl);
+        } catch (errEn) {
+          console.warn("Primary EN template failed, using local fallback:", errEn);
+          bgImgEn = await loadImage('/templates/certificate_en.png');
+        }
       }
-      if (hasAr && settings.bg_image_ar) {
-        const corsBgUrl = settings.bg_image_ar + (settings.bg_image_ar.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
-        bgImgAr = await loadImage(corsBgUrl);
+      if (hasAr) {
+        const arUrl = getTemplateUrl(settings?.bg_image_ar, '/templates/certificate_ar.png');
+        try {
+          bgImgAr = await loadImage(arUrl);
+        } catch (errAr) {
+          console.warn("Primary AR template failed, using local fallback:", errAr);
+          bgImgAr = await loadImage('/templates/certificate_ar.png');
+        }
       }
     } catch (preloadErr) {
       console.error("Failed to pre-load background template images:", preloadErr);
-      alert("Failed to pre-load template background images. Check your internet connection.");
+      alert("Failed to pre-load template background images. Please check the template settings in the Designer.");
       setIsGenerating(false);
       return;
     }
@@ -762,7 +777,9 @@ export default function Dashboard({ showOnlyCompleted = false }) {
   const loadImage = (src) => {
     return new Promise((resolve, reject) => {
       const img = new Image();
-      img.crossOrigin = 'anonymous';
+      if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
+        img.crossOrigin = 'anonymous';
+      }
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error('Image failed to load: ' + src));
       img.src = src;

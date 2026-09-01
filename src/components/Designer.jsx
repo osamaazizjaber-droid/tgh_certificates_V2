@@ -138,8 +138,8 @@ export default function Designer() {
         };
         finalConfig = {
           ...settingsData,
-          bg_image_en: settingsData.bg_image_en || '',
-          bg_image_ar: settingsData.bg_image_ar || '',
+          bg_image_en: (settingsData.bg_image_en && !settingsData.bg_image_en.includes('nhost.run')) ? settingsData.bg_image_en : '/templates/certificate_en.png',
+          bg_image_ar: (settingsData.bg_image_ar && !settingsData.bg_image_ar.includes('nhost.run')) ? settingsData.bg_image_ar : '/templates/certificate_ar.png',
           layouts: mergedLayouts
         };
       } else {
@@ -316,7 +316,13 @@ export default function Designer() {
   }
 
   const currentLayout = config.layouts[lang];
-  const bgImage = lang === 'en' ? config.bg_image_en : config.bg_image_ar;
+  const getTemplateUrl = (url, fallback) => {
+    if (!url || url.includes('nhost.run')) return fallback;
+    return url;
+  };
+  const bgImage = lang === 'en' 
+    ? getTemplateUrl(config.bg_image_en, '/templates/certificate_en.png') 
+    : getTemplateUrl(config.bg_image_ar, '/templates/certificate_ar.png');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
