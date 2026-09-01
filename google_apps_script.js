@@ -260,9 +260,11 @@ function saveSettings_(ss, s) {
 
 /**
  * Run this function ONCE in the Apps Script editor (select 'authorizeDrive' and click 'Run')
- * to grant Google Drive authorization permissions.
+ * to grant Google Drive WRITE permissions.
  */
 function authorizeDrive() {
   const folder = DriveApp.getFolderById('1-gRG2ZkIWSmq6PwMquC4MLPCs63QhWSP');
-  Logger.log('Success! Google Drive access is authorized for folder: ' + folder.getName());
+  const testFile = folder.createFile('temp_permission_check.txt', 'Authorized');
+  testFile.setTrashed(true);
+  Logger.log('Success! Full Google Drive write access is authorized for folder: ' + folder.getName());
 }
