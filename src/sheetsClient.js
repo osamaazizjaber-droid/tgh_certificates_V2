@@ -134,6 +134,13 @@ export const sheetsClient = {
    */
   async deleteAllRecipients() {
     return await post({ action: 'deleteAllRecipients' });
+  },
+
+  /**
+   * Save certificate PDF to Google Drive and update pdf_url in Google Sheets
+   */
+  async saveCertificatePdf(payload) {
+    return await post({ action: 'saveCertificatePdf', ...payload });
   }
 };
 

@@ -783,10 +783,25 @@ export default function Dashboard({ showOnlyCompleted = false }) {
         const filename = `${row.cert_id}_${safeName}.pdf`;
         generatedFiles.push({ filename, blob: pdf.output('blob'), pdf });
 
-        // Update database row status in Google Sheet
-        await sheetsClient.updateStatus(row.id, 'saved', row.pdf_url || '');
+        let pdfUrl = row.pdf_url || '';
+        try {
+          const dataUri = pdf.output('datauristring');
+          const base64Content = dataUri.split(',')[1];
+          const uploadRes = await sheetsClient.saveCertificatePdf({
+            id: row.id,
+            fileName: filename,
+            pdfBase64: base64Content,
+            folderId: '1-gRG2ZkIWSmq6PwMquC4MLPCs63QhWSP'
+          });
+          if (uploadRes && uploadRes.pdf_url) {
+            pdfUrl = uploadRes.pdf_url;
+          }
+        } catch (uploadErr) {
+          console.warn("Upload to Drive encountered an issue, saving status directly:", uploadErr);
+          await sheetsClient.updateStatus(row.id, 'saved', row.pdf_url || '');
+        }
 
-        setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'saved' } : r));
+        setRecipients(prev => prev.map(r => r.id === row.id ? { ...r, status: 'saved', pdf_url: pdfUrl } : r));
         setProcessingRows(prev => ({ ...prev, [row.id]: 'success' }));
       } catch (err) {
         console.error("Failed to generate for: " + row.name, err);
