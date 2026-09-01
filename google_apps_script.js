@@ -257,3 +257,12 @@ function saveSettings_(ss, s) {
     typeof s.layouts === 'string' ? s.layouts : JSON.stringify(s.layouts)
   ]);
 }
+
+/**
+ * Run this function ONCE in the Apps Script editor (select 'authorizeDrive' and click 'Run')
+ * to grant Google Drive authorization permissions.
+ */
+function authorizeDrive() {
+  const folder = DriveApp.getFolderById('1-gRG2ZkIWSmq6PwMquC4MLPCs63QhWSP');
+  Logger.log('Success! Google Drive access is authorized for folder: ' + folder.getName());
+}

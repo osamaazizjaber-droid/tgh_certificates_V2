@@ -795,6 +795,11 @@ export default function Dashboard({ showOnlyCompleted = false }) {
           });
           if (uploadRes && uploadRes.pdf_url) {
             pdfUrl = uploadRes.pdf_url;
+          } else if (uploadRes && uploadRes.error) {
+            console.error("Apps Script error saving PDF to Drive:", uploadRes.error);
+            if (uploadRes.error.includes("DriveApp") || uploadRes.error.includes("إذن") || uploadRes.error.includes("permission")) {
+              alert("Google Drive authorization needed! In Google Apps Script, select 'authorizeDrive' and click 'Run' once to grant permission.");
+            }
           }
         } catch (uploadErr) {
           console.warn("Upload to Drive encountered an issue, saving status directly:", uploadErr);
